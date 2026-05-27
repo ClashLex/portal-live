@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Portal || Ghost Frame</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        /* Aesthetic Reset & Typography */
+        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;700&display=swap');
+        
+        :root {
+            --accent: #ff2a6d;
+            --accent-glow: rgba(255, 42, 109, 0.4);
+            --bg-dark: #050505;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            background-image: 
+                radial-gradient(circle at 15% 30%, rgba(20, 0, 30, 0.8), transparent 40%),
+                radial-gradient(circle at 85% 70%, rgba(40, 0, 20, 0.8), transparent 40%);
+            color: #ececec;
+            font-family: 'Syne', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            cursor: crosshair;
+        }
+
+        /* Procedural Grain Overlay */
+        .noise-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            pointer-events: none;
+            z-index: 9999;
+            opacity: 0.04;
+            background: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+        }
+
+        /* Container & Shadows */
+        .app-container {
+            position: relative;
+            padding: 1rem;
+            background: rgba(20, 20, 20, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.8), 
+                        inset 0 1px 0 rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            z-index: 10;
+        }
+
+        /* Video/Canvas Setup */
+        .input_video {
+            display: none; /* Keep the actual video element hidden */
+        }
+
+        .output_canvas {
+            border-radius: 8px;
+            transform: scaleX(-1); /* Mirror the webcam */
+            background-color: #000;
+            box-shadow: 0 0 40px rgba(0,0,0,0.5);
+            display: block;
+            width: 1280px;
+            max-width: 90vw;
+            height: auto;
+        }
+
+        /* UI Controls */
+        .controls {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 20px;
+            z-index: 20;
+        }
+
+        button {
+            font-family: 'Syne', sans-serif;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            background: rgba(10, 10, 10, 0.6);
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            padding: 15px 30px;
+            border-radius: 0px; /* Sharp, architectural edges */
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+            backdrop-filter: blur(5px);
+            box-shadow: 0 0 15px transparent;
+        }
+
+        button:hover {
+            background: var(--accent);
+            color: #000;
+            box-shadow: 0 0 25px var(--accent-glow);
+            transform: translateY(-2px);
+        }
+        
+        #status {
+            position: absolute;
+            top: 20px;
+            left: 30px;
+            font-size: 0.8rem;
+            letter-spacing: 1px;
+            color: #888;
+            z-index: 20;
+        }
+
+        .loading-text {
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 0.5; }
+            50% { opacity: 1; text-shadow: 0 0 8px #fff; }
+            100% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+    <div class="noise-overlay"></div>
+    
+    <div id="status" class="loading-text">INITIALIZING NEURAL MODEL...</div>
+
+    <div class="app-container">
+        <video class="input_video" width="1280" height="720" autoplay playsinline></video>
+        <canvas class="output_canvas" width="1280" height="720"></canvas>
+    </div>
+
+    <div class="controls">
+        <button id="freezeBtn">Freeze Background</button>
+        <button id="unfreezeBtn">Resume Live</button>
+    </div>
+
+    <script>
+        // DOM Elements
+        const videoElement = document.querySelector('.input_video');
+        const canvasElement = document.querySelector('.output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const statusText = document.getElementById('status');
+        const freezeBtn = document.getElementById('freezeBtn');
+        const unfreezeBtn = document.getElementById('unfreezeBtn');
+
+        // State Variables
+        let isFrozen = false;
+        
+        // Off-screen canvas to hold the frozen background
+        const frozenCanvas = document.createElement('canvas');
+        frozenCanvas.width = canvasElement.width;
+        frozenCanvas.height = canvasElement.height;
+        const frozenCtx = frozenCanvas.getContext('2d');
+
+        // Capture Frame Logic
+        freezeBtn.addEventListener('click', () => {
+            // Draw current video frame to off-screen canvas
+            frozenCtx.drawImage(videoElement, 0, 0, frozenCanvas.width, frozenCanvas.height);
+            isFrozen = true;
+            statusText.innerText = 'STATUS: BACKGROUND FROZEN';
+            statusText.style.color = 'var(--accent)';
+            statusText.classList.remove('loading-text');
+        });
+
+        unfreezeBtn.addEventListener('click', () => {
+            isFrozen = false;
+            statusText.innerText = 'STATUS: LIVE FEED';
+            statusText.style.color = '#888';
+        });
+
+        // MediaPipe Logic
+        function onResults(results) {
+            // Update status once model runs
+            if(statusText.innerText.includes("INITIALIZING")) {
+                statusText.innerText = 'STATUS: LIVE FEED';
+                statusText.classList.remove('loading-text');
+            }
+
+            // 1. Clear the main canvas
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            // 2. Render Base Background Layer
+            if (isFrozen) {
+                // If frozen, draw the static image saved in the off-screen canvas
+                canvasCtx.drawImage(frozenCanvas, 0, 0, canvasElement.width, canvasElement.height);
+            } else {
+                // Otherwise, just draw the live video
+                canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            }
+
+            // 3. Process Hands & Create the Live Portal
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length >= 2) {
+                
+                // Extract the first two detected hands
+                const hand1 = results.multiHandLandmarks[0];
+                const hand2 = results.multiHandLandmarks[1];
+
+                // Extract Landmark 8 (Index Tip) and 4 (Thumb Tip)
+                // We multiply by canvas dimensions because MediaPipe returns normalized coordinates (0.0 to 1.0)
+                const w = canvasElement.width;
+                const h = canvasElement.height;
+                
+                // Form the four corners of our bounding box
+                const p1 = { x: hand1[8].x * w, y: hand1[8].y * h }; // Hand 1 Index
+                const p2 = { x: hand2[8].x * w, y: hand2[8].y * h }; // Hand 2 Index
+                const p3 = { x: hand2[4].x * w, y: hand2[4].y * h }; // Hand 2 Thumb
+                const p4 = { x: hand1[4].x * w, y: hand1[4].y * h }; // Hand 1 Thumb
+
+                // If background is frozen, punch a hole in it to reveal the live video
+                if (isFrozen) {
+                    canvasCtx.save();
+                    
+                    // Trace the dynamic shape created by the fingertips
+                    canvasCtx.beginPath();
+                    canvasCtx.moveTo(p1.x, p1.y);
+                    canvasCtx.lineTo(p2.x, p2.y);
+                    canvasCtx.lineTo(p3.x, p3.y);
+                    canvasCtx.lineTo(p4.x, p4.y);
+                    canvasCtx.closePath();
+                    
+                    // APPLY CLIPPING MASK
+                    canvasCtx.clip();
+                    
+                    // Draw the live video inside the clipped area ONLY
+                    canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+                    
+                    // Remove the clipping mask for the next frame
+                    canvasCtx.restore();
+                }
+
+                // 4. Draw the Aesthetic Frame connecting the fingers
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(p1.x, p1.y);
+                canvasCtx.lineTo(p2.x, p2.y);
+                canvasCtx.lineTo(p3.x, p3.y);
+                canvasCtx.lineTo(p4.x, p4.y);
+                canvasCtx.closePath();
+                
+                // Frame styling
+                canvasCtx.lineWidth = 2;
+                canvasCtx.strokeStyle = 'rgba(255, 42, 109, 0.9)';
+                canvasCtx.fillStyle = 'rgba(255, 42, 109, 0.15)'; // slight tint inside
+                canvasCtx.shadowColor = '#ff2a6d';
+                canvasCtx.shadowBlur = 20;
+                
+                canvasCtx.fill();
+                canvasCtx.stroke();
+                
+                // Reset shadow blur to avoid bleeding onto other frame elements
+                canvasCtx.shadowBlur = 0; 
+            }
+        }
+
+        // Initialize MediaPipe Hands Model
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+
+        hands.setOptions({
+            maxNumHands: 2, // We need exactly 2 hands for the frame
+            modelComplexity: 1,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6
+        });
+        
+        hands.onResults(onResults);
+
+        // Start the Camera Utility
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+        
+        camera.start();
+    </script>
+</body>
+</html>
